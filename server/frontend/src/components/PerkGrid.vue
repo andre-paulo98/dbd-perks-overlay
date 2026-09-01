@@ -14,7 +14,9 @@
           <div class="perk-desc" v-html="entryFor(perks[n - 1]).description"></div>
         </div>
       </template>
-      <div v-else class="perk-empty">Empty slot</div>
+      <div v-else class="perk-empty">
+        <img :src="emptySlotImage" alt="Empty slot" class="perk-icon perk-icon-empty" />
+      </div>
     </div>
   </div>
 </template>
@@ -26,6 +28,8 @@ const props = defineProps({
   catalogByUrl: { type: Object, required: true },
 });
 defineEmits(['clear-slot']);
+
+const emptySlotImage = '/perks/empty.png';
 
 function entryFor(url) {
   return props.catalogByUrl[url];
@@ -101,12 +105,15 @@ function entryFor(url) {
   padding-left: 18px;
 }
 
+.perk-icon-empty {
+  object-fit: contain;
+  opacity: 0.6;
+}
+
 .perk-empty {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
-  color: #5a5a64;
-  font-size: 0.9rem;
 }
 </style>
