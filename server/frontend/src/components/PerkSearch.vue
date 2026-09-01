@@ -21,6 +21,7 @@
       :placeholder="`Search ${roleLabel} perks…`"
       class="search-input"
       @focus="showResults = true"
+      @input="showResults = true"
       @blur="showResults = false"
       @keydown.down.prevent="move(1)"
       @keydown.up.prevent="move(-1)"
@@ -45,8 +46,8 @@ const highlightIndex = ref(0);
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
-  const list = q ? props.catalog.filter((p) => p.name.toLowerCase().includes(q)) : props.catalog;
-  return list.slice(0, 8);
+  if (!q) return [];
+  return props.catalog.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 8);
 });
 
 watch(filtered, () => {
@@ -63,7 +64,8 @@ function move(delta) {
 function select(perk) {
   emit('pick', perk);
   query.value = '';
-  showResults.value = false;
+  // showResults stays true - the input keeps focus after a pick, so the
+  // popup should too, ready for the next search without a refocus.
 }
 
 function selectHighlighted() {
