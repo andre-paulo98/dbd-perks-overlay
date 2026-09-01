@@ -1,0 +1,125 @@
+const express = require('express');
+const http = require('http');
+const path = require('path');
+const { WebSocketServer } = require('ws');
+
+const {
+  roomExists,
+  getRoom,
+  setPerks,
+  setPerk,
+  clearPerks,
+  startCleanupSweep,
+} = require('./rooms');
+
+const app = express();
+app.use(express.json());
+app.use('/perks', express.static(path.join(__dirname, '..', 'public', 'perks')));
+app.use('/api/rooms', require('./routes/rooms'));
+app.use('/api/perks', require('./routes/perks'));
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+
+// room code -> Set<WebSocket>. Everyone in a room - browser tabs and
+// Rainmeter clients alike - lives in the same set and gets the same broadcasts.
+const roomSockets = new Map();
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname !== '/ws') {
+    socket.destroy();
+    return;
+  }
+
+  const code = (url.searchParams.get('room') || '').toUpperCase();
+  if (!code || !roomExists(code)) {
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, code);
+  });
+});
+
+wss.on('connection', (ws, code) => {
+  if (!roomSockets.has(code)) roomSockets.set(code, new Set());
+  roomSockets.get(code).add(ws);
+
+  // New joiners (including a Rainmeter client that just connected) get the
+  // current picture immediately, without waiting for someone else to edit.
+  send(ws, stateMessage(code));
+
+  ws.on('message', (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return; // ignore anything that isn't valid JSON
+    }
+
+    switch (msg.type) {
+      case 'setPerks':
+        if (Array.isArray(msg.perks) && setPerks(code, msg.perks)) {
+          broadcast(code);
+        }
+        break;
+
+      case 'setPerk':
+        if (
+          Number.isInteger(msg.index) &&
+          msg.index >= 1 &&
+          msg.index <= 4 &&
+          setPerk(code, msg.index, msg.value)
+        ) {
+          broadcast(code);
+        }
+        break;
+
+      case 'clear':
+        if (clearPerks(code)) {
+          broadcast(code);
+        }
+        break;
+
+      default:
+        break; // unknown message type, ignore
+    }
+  });
+
+  ws.on('close', () => {
+    const set = roomSockets.get(code);
+    if (!set) return;
+    set.delete(ws);
+    if (set.size === 0) roomSockets.delete(code);
+  });
+});
+
+function stateMessage(code) {
+  const room = getRoom(code);
+  return JSON.stringify({
+    type: 'state',
+    code,
+    perks: room.perks,
+    updatedAt: room.updatedAt,
+  });
+}
+
+function send(ws, data) {
+  if (ws.readyState === ws.OPEN) ws.send(data);
+}
+
+function broadcast(code) {
+  const set = roomSockets.get(code);
+  if (!set) return;
+  const data = stateMessage(code);
+  for (const ws of set) send(ws, data);
+}
+
+startCleanupSweep();
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => {
+  console.log(`DBD perk sync server listening on :${PORT}`);
+});

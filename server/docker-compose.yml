@@ -1,0 +1,21 @@
+services:
+  perk-server:
+    build: ./server
+    # No published port - only the frontend's nginx talks to this directly,
+    # over the internal Docker network (by service name "perk-server").
+    volumes:
+      # Mounted so you can add/update perk images and perks.json without
+      # rebuilding the image.
+      - ./server/public/perks:/app/public/perks
+    environment:
+      - PORT=3001
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - perk-server
+    restart: unless-stopped
+
