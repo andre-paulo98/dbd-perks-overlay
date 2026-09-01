@@ -65,8 +65,10 @@ namespace DbdPerkSocket
 
         internal API api;
 
-        string address = "";
+        string wsBase = "";
         string cacheFolder = "";
+        string currentRoom = "";
+        string status = "No room set - enter a code below";
         string onConnectBang = "";
         string onMessageBang = "";
         string onDisconnectBang = "";
@@ -82,13 +84,13 @@ namespace DbdPerkSocket
         {
             this.api = api;
 
-            string newAddress = api.ReadString("Address", "");
+            string newWsBase = api.ReadString("Address", "");
             cacheFolder = api.ReadPath("CacheFolder", "");
             onConnectBang = api.ReadString("OnConnect", "");
             onMessageBang = api.ReadString("OnMessage", "");
             onDisconnectBang = api.ReadString("OnDisconnect", "");
 
-            api.Log(API.LogType.Notice, "DbdPerkSocket: Reload - Address=[" + newAddress + "]");
+            api.Log(API.LogType.Notice, "DbdPerkSocket: Reload - Address=[" + newWsBase + "]");
             api.Log(API.LogType.Notice, "DbdPerkSocket: OnMessage bang = [" + onMessageBang + "]");
 
             if (string.IsNullOrEmpty(cacheFolder))
@@ -107,27 +109,204 @@ namespace DbdPerkSocket
                 }
             }
 
-            // Only (re)connect if the address actually changed - Reload can be
-            // called on every skin refresh, and we don't want to drop a live
-            // connection just because the skin was refreshed for an unrelated reason.
-            if (newAddress != address)
+            // Address is just the server base now (e.g. ws://host:8080/ws) -
+            // no room baked in. We only (re)connect here if a room was
+            // already active (e.g. the address itself changed on a skin
+            // refresh); a fresh skin with no room yet waits for SetRoom.
+            if (newWsBase != wsBase)
             {
-                address = newAddress;
-                Connect();
+                wsBase = newWsBase;
+                if (!string.IsNullOrEmpty(currentRoom))
+                {
+                    Connect(wsBase + "?room=" + currentRoom);
+                }
+            }
+
+            // A skin refresh reloads the .ini fresh, which resets meter
+            // visibility and ImageName back to their static defaults (room
+            // box shown, perks hidden and blank) - even though we're still
+            // actually connected. Re-apply the connected view and re-push
+            // whatever images we already had cached, so a refresh doesn't
+            // visually "lose" an active session.
+            if (!string.IsNullOrEmpty(currentRoom))
+            {
+                api.Execute("[!HideMeter RoomBox][!ShowMeterGroup Perks]");
+
+                string[] snapshot = new string[4];
+                lock (sync)
+                {
+                    Array.Copy(perkUrls, snapshot, 4);
+                }
+
+                string emptySlotImage = null;
+                for (int i = 0; i < 4; i++)
+                {
+                    string imageMeter = $"Perk{i + 1}Image";
+                    if (!string.IsNullOrEmpty(snapshot[i]))
+                    {
+                        api.Execute($"[!SetOption {imageMeter} ImageName \"{snapshot[i]}\"]");
+                    }
+                    else
+                    {
+                        if (emptySlotImage == null)
+                        {
+                            emptySlotImage = GetEmptySlotImage();
+                        }
+                        api.Execute($"[!SetOption {imageMeter} ImageName \"{emptySlotImage}\"]");
+                    }
+                }
+                api.Execute("[!UpdateMeter RoomBox][!UpdateMeterGroup Perks][!Redraw]");
             }
         }
 
-        void Connect()
+        // Called via [!CommandMeasure WebSocketMeasure "SetRoom XXXXX"] - see
+        // the InputText measure's Command1 in the skin. Validates the room
+        // exists (a quick GET against the server's REST API) before ever
+        // opening a WebSocket to it, so a typo'd code gets an immediate,
+        // clear "not found" rather than a silently-failing connection.
+        internal void ExecuteBang(string args)
         {
-            cts?.Cancel();
-            cts = new CancellationTokenSource();
-
-            if (string.IsNullOrEmpty(address))
+            if (string.IsNullOrEmpty(args))
             {
                 return;
             }
 
-            Task.Run(() => RunLoop(address, cts.Token));
+            var parts = args.Split(new[] { ' ' }, 2);
+            string command = parts[0];
+            string arg = parts.Length > 1 ? parts[1] : "";
+
+            if (command == "SetRoom")
+            {
+                SetRoom(arg);
+            }
+            else if (command == "ShowRoomInput")
+            {
+                ShowRoomInput();
+            }
+        }
+
+        // Called via right-click on the perk grid to bring the room box
+        // back, so you can switch to a different room without ever
+        // needing to see "Connected to X" during normal use.
+        void ShowRoomInput()
+        {
+            SetStatus(string.IsNullOrEmpty(currentRoom)
+                ? "No room - enter a code"
+                : "Enter a new code to switch");
+            api?.Execute("[!ShowMeter RoomBox][!HideMeterGroup Perks][!UpdateMeter RoomBox][!UpdateMeterGroup Perks][!Redraw]");
+        }
+
+        void SetRoom(string code)
+        {
+            code = (code ?? "").Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(code))
+            {
+                return;
+            }
+
+            SetStatus("Checking room " + code + "...");
+            Task.Run(() => ValidateAndConnect(code));
+        }
+
+        async Task ValidateAndConnect(string code)
+        {
+            string apiBase = DeriveApiBase(wsBase);
+            if (string.IsNullOrEmpty(apiBase))
+            {
+                SetStatus("Bad server address");
+                return;
+            }
+
+            try
+            {
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                {
+                    var response = await http.GetAsync($"{apiBase}/api/rooms/{code}", timeoutCts.Token);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        SetStatus("Room " + code + " not found");
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                api?.Log(API.LogType.Warning, "DbdPerkSocket: room check failed - " + ex.Message);
+                SetStatus("Server unreachable");
+                return;
+            }
+
+            currentRoom = code;
+            ClearAllImages(); // drop any stale images from a previous room immediately
+            SetStatus("Connected to " + code);
+            api?.Execute("[!HideMeter RoomBox][!ShowMeterGroup Perks][!UpdateMeter RoomBox][!UpdateMeterGroup Perks][!Redraw]");
+            Connect(wsBase + "?room=" + code);
+        }
+
+        // e.g. "ws://127.0.0.1:8080/ws" -> "http://127.0.0.1:8080"
+        static string DeriveApiBase(string wsAddress)
+        {
+            try
+            {
+                var uri = new Uri(wsAddress);
+                string scheme = string.Equals(uri.Scheme, "wss", StringComparison.OrdinalIgnoreCase) ? "https" : "http";
+                return $"{scheme}://{uri.Host}:{uri.Port}";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        void SetStatus(string text)
+        {
+            lock (sync) { status = text; }
+            api?.Execute("[!UpdateMeter RoomBox][!Redraw]");
+        }
+
+        internal string GetStatus()
+        {
+            lock (sync) { return status; }
+        }
+
+        void ClearAllImages()
+        {
+            lock (sync)
+            {
+                for (int i = 0; i < 4; i++) perkUrls[i] = "";
+            }
+            string emptyPath = GetEmptySlotImage();
+            for (int i = 1; i <= 4; i++)
+            {
+                api?.Execute($"[!SetOption Perk{i}Image ImageName \"{emptyPath}\"][!UpdateMeter Perk{i}Image][!Redraw]");
+            }
+        }
+
+        // The "empty slot" placeholder lives on the same server as everything
+        // else (served at /perks/empty.png), so it's resolved through the
+        // exact same EnsureCached path as real perk icons - downloaded once,
+        // then read straight from disk on every subsequent empty slot.
+        string GetEmptySlotImage()
+        {
+            string apiBase = DeriveApiBase(wsBase);
+            if (string.IsNullOrEmpty(apiBase))
+            {
+                return "";
+            }
+            return EnsureCached($"{apiBase}/perks/empty.png");
+        }
+
+        void Connect(string fullAddress)
+        {
+            cts?.Cancel();
+            cts = new CancellationTokenSource();
+
+            if (string.IsNullOrEmpty(fullAddress))
+            {
+                return;
+            }
+
+            Task.Run(() => RunLoop(fullAddress, cts.Token));
         }
 
         async Task RunLoop(string uri, CancellationToken token)
@@ -249,6 +428,10 @@ namespace DbdPerkSocket
             // No WebParser measure needed for this anymore - the plugin
             // already has the file on disk by this point, so there's
             // nothing left for WebParser's own Download mechanism to do.
+            // Empty slots get the "empty slot" placeholder rather than a
+            // blank ImageName, so it's visually obvious the connection is
+            // live even before any perks have been picked.
+            string emptySlotImage = null; // resolved lazily, only if actually needed below
             for (int i = 0; i < 4; i++)
             {
                 string imageMeter = $"Perk{i + 1}Image";
@@ -260,7 +443,11 @@ namespace DbdPerkSocket
                 }
                 else
                 {
-                    api?.Execute($"[!SetOption {imageMeter} ImageName \"\"][!UpdateMeter {imageMeter}][!Redraw]");
+                    if (emptySlotImage == null)
+                    {
+                        emptySlotImage = GetEmptySlotImage();
+                    }
+                    api?.Execute($"[!SetOption {imageMeter} ImageName \"{emptySlotImage}\"][!UpdateMeter {imageMeter}][!Redraw]");
                 }
             }
 
@@ -382,6 +569,22 @@ namespace DbdPerkSocket
         {
             Measure measure = (Measure)data;
             measure.Reload(new Rainmeter.API(rm), ref maxValue);
+        }
+
+        [DllExport]
+        public static void ExecuteBang(IntPtr data, [MarshalAs(UnmanagedType.LPWStr)] string args)
+        {
+            Measure measure = (Measure)data;
+            measure.ExecuteBang(args);
+        }
+
+        // Section variable: [WebSocketMeasure:Status()] - human-readable
+        // connection state, for a String meter to display.
+        [DllExport]
+        public static IntPtr Status(IntPtr data, int argc, string[] argv)
+        {
+            Measure measure = (Measure)data;
+            return Rainmeter.StringBuffer.Update(measure.GetStatus());
         }
 
         [DllExport]
