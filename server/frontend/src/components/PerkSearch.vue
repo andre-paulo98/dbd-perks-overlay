@@ -44,10 +44,32 @@ const query = ref('');
 const showResults = ref(false);
 const highlightIndex = ref(0);
 
+// Strips HTML tags before matching against description text, so markup
+// like "<ul><li>" can't cause a false-positive match on something typed
+// that happens to overlap with tag names.
+function stripHtml(html) {
+  return (html || '').replace(/<[^>]*>/g, ' ');
+}
+
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
   if (!q) return [];
-  return props.catalog.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 8);
+
+  const nameMatches = [];
+  const descMatches = [];
+
+  for (const p of props.catalog) {
+    if (p.name.toLowerCase().includes(q)) {
+      nameMatches.push(p);
+    } else if (stripHtml(p.description).toLowerCase().includes(q)) {
+      descMatches.push(p);
+    }
+  }
+
+  // Name matches first - if you typed something closer to what you
+  // remember as the name, that's almost certainly what you meant, even
+  // when a lot of other perks' descriptions happen to also match.
+  return [...nameMatches, ...descMatches].slice(0, 8);
 });
 
 watch(filtered, () => {
