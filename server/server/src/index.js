@@ -11,12 +11,15 @@ const {
   clearPerks,
   startCleanupSweep,
 } = require('./rooms');
+const { loadPerksCatalog } = require('./perksCatalog');
 
 const app = express();
 app.use(express.json());
 app.use('/perks', express.static(path.join(__dirname, '..', 'public', 'perks')));
 app.use('/api/rooms', require('./routes/rooms'));
-app.use('/api/perks', require('./routes/perks'));
+
+let perksCatalog = [];
+app.use('/api/perks', require('./routes/perks')(() => perksCatalog));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
@@ -120,6 +123,15 @@ function broadcast(code) {
 startCleanupSweep();
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`DBD perk sync server listening on :${PORT}`);
+
+async function start() {
+  perksCatalog = await loadPerksCatalog();
+  server.listen(PORT, () => {
+    console.log(`DBD perk sync server listening on :${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('Failed to start:', err.message);
+  process.exit(1);
 });

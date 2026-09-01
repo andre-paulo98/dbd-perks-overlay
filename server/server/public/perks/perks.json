@@ -86,7 +86,7 @@
   },
   {
     "id": "BBQAndChili",
-    "name": "BBQ & Chili",
+    "name": "Barbecue & Chili",
     "image": "iconPerks_BBQAndChili.png"
   },
   {
@@ -346,7 +346,7 @@
   },
   {
     "id": "DevourHope",
-    "name": "Devour Hope",
+    "name": "Hex: Devour Hope",
     "image": "iconPerks_DevourHope.png"
   },
   {
@@ -536,7 +536,7 @@
   },
   {
     "id": "HauntedGround",
-    "name": "Haunted Ground",
+    "name": "Hex: Haunted Ground",
     "image": "iconPerks_HauntedGround.png"
   },
   {
@@ -771,7 +771,7 @@
   },
   {
     "id": "MonstrousShrine",
-    "name": "Monstrous Shrine",
+    "name": "Scourge Hook: Monstrous Shrine",
     "image": "iconPerks_MonstrousShrine.png"
   },
   {
@@ -896,7 +896,7 @@
   },
   {
     "id": "QuickAndQuiet",
-    "name": "Quick and Quiet",
+    "name": "Quick & Quiet",
     "image": "iconPerks_QuickAndQuiet.png"
   },
   {
@@ -951,7 +951,7 @@
   },
   {
     "id": "Ruin",
-    "name": "Ruin",
+    "name": "Hex: Ruin",
     "image": "iconPerks_Ruin.png"
   },
   {
@@ -1146,7 +1146,7 @@
   },
   {
     "id": "TheThirdSeal",
-    "name": "The Third Seal",
+    "name": "Hex: The Third Seal",
     "image": "iconPerks_TheThirdSeal.png"
   },
   {
@@ -1161,7 +1161,7 @@
   },
   {
     "id": "ThrillOfTheHunt",
-    "name": "Thrill of the Hunt",
+    "name": "Hex: Thrill of the Hunt",
     "image": "iconPerks_ThrillOfTheHunt.png"
   },
   {

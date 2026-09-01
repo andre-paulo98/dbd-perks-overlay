@@ -1,19 +1,14 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 
-const router = express.Router();
-const CATALOG_PATH = path.join(__dirname, '..', '..', 'public', 'perks', 'perks.json');
+// getCatalog is a function rather than the array itself, since the array
+// reference gets replaced wholesale each time the catalog is refetched -
+// a function always reads the current one.
+module.exports = function perksRouter(getCatalog) {
+  const router = express.Router();
 
-router.get('/', (req, res) => {
-  fs.readFile(CATALOG_PATH, 'utf8', (err, data) => {
-    if (err) return res.json([]);
-    try {
-      res.json(JSON.parse(data));
-    } catch {
-      res.json([]);
-    }
+  router.get('/', (req, res) => {
+    res.json(getCatalog());
   });
-});
 
-module.exports = router;
+  return router;
+};

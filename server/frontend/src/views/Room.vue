@@ -14,18 +14,20 @@
       <span class="status" :class="status">{{ statusLabel }}</span>
     </header>
 
-    <PerkSlots
-      :perks="perks"
-      :active-slot="activeSlot"
-      @select-slot="selectSlot"
-      @clear-slot="clearSlot"
-    />
+    <div class="mode-toggle">
+      <button :class="{ active: mode === 'killer' }" @click="mode = 'killer'">Killer</button>
+      <button class="locked" disabled title="Survivor perks aren't supported yet">
+        Survivor 🔒
+      </button>
+    </div>
+
+    <PerkGrid :perks="perks" :catalog-by-url="catalogByUrl" @clear-slot="clearSlot" />
 
     <div class="actions">
       <button class="clear-all" @click="clearAll">Clear all</button>
     </div>
 
-    <PerkPicker :catalog="catalog" @pick="pickPerk" />
+    <PerkSearch :catalog="modeFilteredCatalog" :role-label="mode" @pick="addPerk" />
   </div>
 </template>
 
@@ -34,8 +36,8 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import api from '../api';
 import { useRoomSocket } from '../composables/useRoomSocket';
-import PerkSlots from '../components/PerkSlots.vue';
-import PerkPicker from '../components/PerkPicker.vue';
+import PerkGrid from '../components/PerkGrid.vue';
+import PerkSearch from '../components/PerkSearch.vue';
 
 const props = defineProps({ code: { type: String, required: true } });
 const code = props.code.toUpperCase();
@@ -43,11 +45,9 @@ const code = props.code.toUpperCase();
 const router = useRouter();
 const notFound = ref(false);
 const catalog = ref([]);
-const activeSlot = ref(1);
+const mode = ref('killer');
 const copied = ref(false);
 
-// Destructuring the refs (rather than keeping `socket.perks`) so the
-// template can auto-unwrap them directly.
 const { perks, status, setPerk, clear, disconnect } = useRoomSocket(code);
 
 const statusLabel = computed(
@@ -58,6 +58,19 @@ const statusLabel = computed(
       closed: 'Reconnecting…',
     })[status.value] || '',
 );
+
+const modeFilteredCatalog = computed(() => catalog.value.filter((p) => p.role === mode.value));
+
+// Maps each perk's absolute image URL (the same string form sent over the
+// socket) back to its full catalog entry, so the grid can show name +
+// description for whatever's currently in each slot.
+const catalogByUrl = computed(() => {
+  const map = {};
+  for (const perk of catalog.value) {
+    map[`${window.location.origin}/perks/${perk.image}`] = perk;
+  }
+  return map;
+});
 
 onMounted(async () => {
   const room = await api.getRoom(code);
@@ -71,17 +84,11 @@ onMounted(async () => {
 
 onBeforeUnmount(disconnect);
 
-function selectSlot(n) {
-  activeSlot.value = n;
-}
-
-function pickPerk(perk) {
-  // Absolute URL: this string gets broadcast to non-browser clients too
-  // (the Rainmeter plugin), which have no page origin to resolve a
-  // relative path against.
+function addPerk(perk) {
+  const index = perks.value.findIndex((p) => !p); // first empty slot
+  if (index === -1) return; // all 4 full - ignore rather than overwrite
   const url = `${window.location.origin}/perks/${perk.image}`;
-  setPerk(activeSlot.value, url);
-  activeSlot.value = activeSlot.value < 4 ? activeSlot.value + 1 : 1;
+  setPerk(index + 1, url);
 }
 
 function clearSlot(n) {
@@ -112,7 +119,7 @@ async function copyLink() {
 .app {
   max-width: 720px;
   margin: 0 auto;
-  padding: 32px 16px;
+  padding: 32px 16px 48px;
 }
 
 header {
@@ -121,7 +128,7 @@ header {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 16px;
 }
 
 .room-code {
@@ -163,10 +170,38 @@ header {
   color: #e63946;
 }
 
+.mode-toggle {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.mode-toggle button {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid #3a3a42;
+  background: #1c1c22;
+  color: #999;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.mode-toggle button.active {
+  border-color: #e63946;
+  color: #fff;
+  background: #2a1518;
+}
+
+.mode-toggle button.locked {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .actions {
   display: flex;
   justify-content: center;
-  margin-bottom: 28px;
+  margin-bottom: 32px;
 }
 
 .clear-all {
