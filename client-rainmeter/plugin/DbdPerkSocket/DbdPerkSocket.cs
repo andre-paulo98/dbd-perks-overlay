@@ -28,6 +28,7 @@
  *   Measure=Plugin
  *   Plugin=DbdPerkSocket.dll
  *   Address=ws://yourserver:PORT/ws?room=CODE
+ *   CacheFolder=#CURRENTPATH#Cache\        ; REQUIRED - where images are cached
  *   OnConnect=[bang to run when connected]
  *   OnMessage=[bang to run whenever a new perk message arrives]
  *   OnDisconnect=[bang to run on disconnect / before a retry]
@@ -38,6 +39,8 @@
 
 using Rainmeter;
 using System;
+using System.IO;
+using System.Net.Http;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -55,9 +58,15 @@ namespace DbdPerkSocket
             return (Measure)GCHandle.FromIntPtr(data).Target;
         }
 
+        // Shared across all instances - a single long-lived HttpClient is the
+        // recommended .NET pattern (creating one per request/download risks
+        // socket exhaustion under load).
+        static readonly HttpClient http = new HttpClient();
+
         internal API api;
 
         string address = "";
+        string cacheFolder = "";
         string onConnectBang = "";
         string onMessageBang = "";
         string onDisconnectBang = "";
@@ -74,12 +83,29 @@ namespace DbdPerkSocket
             this.api = api;
 
             string newAddress = api.ReadString("Address", "");
+            cacheFolder = api.ReadPath("CacheFolder", "");
             onConnectBang = api.ReadString("OnConnect", "");
             onMessageBang = api.ReadString("OnMessage", "");
             onDisconnectBang = api.ReadString("OnDisconnect", "");
 
             api.Log(API.LogType.Notice, "DbdPerkSocket: Reload - Address=[" + newAddress + "]");
             api.Log(API.LogType.Notice, "DbdPerkSocket: OnMessage bang = [" + onMessageBang + "]");
+
+            if (string.IsNullOrEmpty(cacheFolder))
+            {
+                api.Log(API.LogType.Warning, "DbdPerkSocket: CacheFolder is not set - add CacheFolder=#CURRENTPATH#Cache\\ to this measure's section, images will not be cached");
+            }
+            else
+            {
+                try
+                {
+                    Directory.CreateDirectory(cacheFolder);
+                }
+                catch (Exception ex)
+                {
+                    api.Log(API.LogType.Error, "DbdPerkSocket: could not create CacheFolder - " + ex.Message);
+                }
+            }
 
             // Only (re)connect if the address actually changed - Reload can be
             // called on every skin refresh, and we don't want to drop a live
@@ -159,7 +185,7 @@ namespace DbdPerkSocket
 
         static async Task<string> ReceiveFullMessage(ClientWebSocket socket, byte[] buffer, CancellationToken token)
         {
-            using (var ms = new System.IO.MemoryStream())
+            using (var ms = new MemoryStream())
             {
                 WebSocketReceiveResult result;
                 do
@@ -203,32 +229,81 @@ namespace DbdPerkSocket
 
             api?.Log(API.LogType.Notice, "DbdPerkSocket: parsed -> [1]=" + urls[0] + " [2]=" + urls[1] + " [3]=" + urls[2] + " [4]=" + urls[3]);
 
+            // Resolve each URL to a local cached file BEFORE touching any
+            // skin state. EnsureCached only hits the network if the file
+            // isn't already on disk, so re-picking the same perk later -
+            // even across a restart - is instant instead of re-downloading.
+            var paths = new string[4];
+            for (int i = 0; i < 4; i++)
+            {
+                paths[i] = string.IsNullOrEmpty(urls[i]) ? "" : EnsureCached(urls[i]);
+            }
+
             lock (sync)
             {
                 lastMessage = json;
-                Array.Copy(urls, perkUrls, 4);
+                Array.Copy(paths, perkUrls, 4);
             }
 
-            // Trigger WebParser downloads directly with exact URL strings
+            // Push each resolved LOCAL path straight into its Image meter.
+            // No WebParser measure needed for this anymore - the plugin
+            // already has the file on disk by this point, so there's
+            // nothing left for WebParser's own Download mechanism to do.
             for (int i = 0; i < 4; i++)
             {
-                string downloadMeasure = $"Perk{i + 1}Download";
                 string imageMeter = $"Perk{i + 1}Image";
-                string targetUrl = perkUrls[i];
+                string localPath = perkUrls[i];
 
-                if (!string.IsNullOrEmpty(targetUrl))
+                if (!string.IsNullOrEmpty(localPath))
                 {
-                    // Restore MeasureName link and trigger the WebParser fetch
-                    api?.Execute($"[!SetOption {imageMeter} MeasureName \"{downloadMeasure}\"][!SetOption {downloadMeasure} Url \"{targetUrl}\"][!CommandMeasure {downloadMeasure} \"Update\"]");
+                    api?.Execute($"[!SetOption {imageMeter} ImageName \"{localPath}\"][!UpdateMeter {imageMeter}][!Redraw]");
                 }
                 else
                 {
-                    // Unlink MeasureName, blank ImageName, reset the WebParser string value, and redraw
-                    api?.Execute($"[!SetOption {imageMeter} MeasureName \"\"][!SetOption {imageMeter} ImageName \"\"][!SetOption {downloadMeasure} Url \"\"][!SetOption {downloadMeasure} String \"\"][!UpdateMeter {imageMeter}][!UpdateMeasure {downloadMeasure}][!Redraw]");
+                    api?.Execute($"[!SetOption {imageMeter} ImageName \"\"][!UpdateMeter {imageMeter}][!Redraw]");
                 }
             }
 
             FireBang(onMessageBang);
+        }
+
+        // Downloads a perk image to CacheFolder only if it isn't already
+        // there, and returns the local path either way. The cache key is
+        // just the filename from the URL, so re-picking the same perk
+        // later - even in a different room - reuses the same cached file
+        // instead of re-fetching it.
+        string EnsureCached(string url)
+        {
+            if (string.IsNullOrEmpty(cacheFolder))
+            {
+                return url; // nothing configured to cache into - warned about in Reload already
+            }
+
+            try
+            {
+                string filename = Path.GetFileName(new Uri(url).LocalPath);
+                if (string.IsNullOrEmpty(filename))
+                {
+                    return url;
+                }
+
+                string localPath = Path.Combine(cacheFolder, filename);
+
+                if (File.Exists(localPath))
+                {
+                    return localPath;
+                }
+
+                api?.Log(API.LogType.Notice, "DbdPerkSocket: caching " + url + " -> " + localPath);
+                byte[] data = http.GetByteArrayAsync(url).GetAwaiter().GetResult();
+                File.WriteAllBytes(localPath, data);
+                return localPath;
+            }
+            catch (Exception ex)
+            {
+                api?.Log(API.LogType.Error, "DbdPerkSocket: failed to cache " + url + " - " + ex.Message);
+                return url;
+            }
         }
 
         void FireBang(string bang)
