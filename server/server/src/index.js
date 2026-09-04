@@ -50,6 +50,12 @@ wss.on('connection', (ws, code) => {
   if (!roomSockets.has(code)) roomSockets.set(code, new Set());
   roomSockets.get(code).add(ws);
 
+  // Heartbeat bookkeeping - see the setInterval below.
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
   // New joiners (including a Rainmeter client that just connected) get the
   // current picture immediately, without waiting for someone else to edit.
   send(ws, stateMessage(code));
@@ -119,6 +125,27 @@ function broadcast(code) {
   const data = stateMessage(code);
   for (const ws of set) send(ws, data);
 }
+
+// Reverse proxies (nginx, and often whatever sits in front of it too)
+// default to closing a WebSocket connection after ~60s of no traffic -
+// and since we only ever push data when perks actually change, a quiet
+// lobby would otherwise get disconnected and reconnected on a loop. A
+// ping every 25s keeps real bytes flowing well under that window. This
+// also doubles as dead-connection cleanup: a client that doesn't
+// respond to one ping gets terminated on the next round rather than
+// lingering as a zombie entry in roomSockets.
+const HEARTBEAT_INTERVAL_MS = 25000;
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, HEARTBEAT_INTERVAL_MS);
+heartbeat.unref(); // don't keep the process alive just for this timer
 
 startCleanupSweep();
 
