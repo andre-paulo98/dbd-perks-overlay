@@ -40,6 +40,7 @@
 using Rainmeter;
 using System;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
@@ -63,12 +64,32 @@ namespace DbdPerkSocket
         // socket exhaustion under load).
         static readonly HttpClient http = new HttpClient();
 
+        static Measure()
+        {
+            // Older .NET Framework builds don't always default to allowing
+            // TLS 1.2 for outbound HTTPS requests, even on a modern OS that
+            // fully supports it - HttpClient/ClientWebSocket then just fail
+            // against any server that doesn't also offer an older protocol
+            // (which most modern nginx/Let's Encrypt setups don't), with a
+            // generic, unhelpful error. Force it on explicitly rather than
+            // rely on the framework's default.
+            try
+            {
+                ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            }
+            catch
+            {
+                // If this specific enum value somehow isn't available, the
+                // improved exception logging below will show the real cause.
+            }
+        }
+
         internal API api;
 
         string wsBase = "";
         string cacheFolder = "";
         string currentRoom = "";
-        string status = "No room set - enter a code below";
+        string status = "No room - enter a code";
         string onConnectBang = "";
         string onMessageBang = "";
         string onDisconnectBang = "";
@@ -231,7 +252,7 @@ namespace DbdPerkSocket
             }
             catch (Exception ex)
             {
-                api?.Log(API.LogType.Warning, "DbdPerkSocket: room check failed - " + ex.Message);
+                api?.Log(API.LogType.Warning, "DbdPerkSocket: room check failed - " + DescribeException(ex));
                 SetStatus("Server unreachable");
                 return;
             }
@@ -256,6 +277,24 @@ namespace DbdPerkSocket
             {
                 return "";
             }
+        }
+
+        // Unwraps the full exception chain for logging - HttpClient/
+        // ClientWebSocket failures are almost always wrapped in an outer
+        // exception with a generic message like "An error occurred while
+        // sending the request.", while the actually useful detail (TLS
+        // failure, DNS failure, connection refused, etc.) is in
+        // InnerException, sometimes nested more than one level deep.
+        static string DescribeException(Exception ex)
+        {
+            var sb = new StringBuilder();
+            while (ex != null)
+            {
+                if (sb.Length > 0) sb.Append(" -> ");
+                sb.Append(ex.GetType().Name).Append(": ").Append(ex.Message);
+                ex = ex.InnerException;
+            }
+            return sb.ToString();
         }
 
         void SetStatus(string text)
@@ -339,7 +378,7 @@ namespace DbdPerkSocket
                 }
                 catch (Exception ex)
                 {
-                    api?.Log(API.LogType.Warning, "DbdPerkSocket: " + ex.Message);
+                    api?.Log(API.LogType.Warning, "DbdPerkSocket: " + DescribeException(ex));
                 }
 
                 FireBang(onDisconnectBang);
@@ -488,7 +527,7 @@ namespace DbdPerkSocket
             }
             catch (Exception ex)
             {
-                api?.Log(API.LogType.Error, "DbdPerkSocket: failed to cache " + url + " - " + ex.Message);
+                api?.Log(API.LogType.Error, "DbdPerkSocket: failed to cache " + url + " - " + DescribeException(ex));
                 return url;
             }
         }
